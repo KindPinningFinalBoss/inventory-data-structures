@@ -1,0 +1,8 @@
+# Submission documents (uploaded to the course portal, not the code repo)
+*.docx
+*.pdf
+*.pptx
+
+# Python
+__pycache__/
+*.pyc
