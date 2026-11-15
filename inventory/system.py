@@ -72,7 +72,7 @@ class InventorySystem:
         self._reorder.update(sku, product.urgency)
 
     def adjust_quantity(self, sku: str, delta: int) -> None:
-        """Add ``delta`` (negative for a sale) to a product's quantity.
+        """Add ``delta`` (negative for a sale) to a product's quantity. O(log n).
 
         Raises:
             KeyError: unknown SKU.
