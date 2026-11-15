@@ -17,7 +17,8 @@ indexes just point at it from different angles.
 
 from __future__ import annotations
 
-from typing import Optional
+import math
+from typing import Iterator, Optional
 
 from .hash_table import HashTable
 from .min_heap import MinHeap
@@ -34,7 +35,17 @@ class InventorySystem:
         self._reorder = MinHeap()
 
     def add_product(self, product: Product) -> None:
-        """Register a product in all three indexes. O(log n)."""
+        """Register a product in all three indexes. O(log n).
+
+        Raises:
+            TypeError: ``product`` is not a :class:`Product`.
+            KeyError: a product with the same SKU is already stored. Nothing is
+                written to any index in that case.
+        """
+        if not isinstance(product, Product):
+            raise TypeError(
+                f"add_product expects a Product, got {type(product).__name__}"
+            )
         if product.sku in self._by_sku:
             raise KeyError(f"duplicate sku: {product.sku}")
         self._by_sku.put(product.sku, product)
@@ -47,30 +58,39 @@ class InventorySystem:
 
     def remove_product(self, sku: str) -> None:
         """Remove a product from every index. O(log n)."""
-        product = self._by_sku.get(sku)
-        if product is None:
-            raise KeyError(sku)
+        product = self._require(sku)
         self._by_sku.remove(sku)
         self._by_price.delete((product.price, product.sku))
         self._reorder.remove(sku)
 
     def update_quantity(self, sku: str, quantity: int) -> None:
         """Set a product's quantity and refresh its reorder priority. O(log n)."""
-        product = self._by_sku.get(sku)
-        if product is None:
-            raise KeyError(sku)
-        if quantity < 0:
-            raise ValueError("quantity must be >= 0")
+        product = self._require(sku)
+        # Assigning runs Product's own validation first, so a bad quantity
+        # raises here before the heap is touched and nothing is half-updated.
         product.quantity = quantity
         self._reorder.update(sku, product.urgency)
 
+    def adjust_quantity(self, sku: str, delta: int) -> None:
+        """Add ``delta`` (negative for a sale) to a product's quantity.
+
+        Raises:
+            KeyError: unknown SKU.
+            ValueError: the result would be below zero (stock is left as it was).
+        """
+        product = self._require(sku)
+        if product.quantity + delta < 0:
+            raise ValueError(
+                f"cannot remove {-delta} of {sku}: only {product.quantity} on hand"
+            )
+        self.update_quantity(sku, product.quantity + delta)
+
     def update_price(self, sku: str, price: float) -> None:
         """Change a product's price, re-keying it in the price index. O(log n)."""
-        product = self._by_sku.get(sku)
-        if product is None:
-            raise KeyError(sku)
-        if price < 0:
-            raise ValueError("price must be >= 0")
+        product = self._require(sku)
+        # Validate first. If the delete below ran and the assignment then failed,
+        # the product would vanish from the price index.
+        Product._check("price", price)
         # The price index is keyed on price, so the old key must move.
         self._by_price.delete((product.price, sku))
         product.price = price
@@ -81,7 +101,20 @@ class InventorySystem:
 
         The skip list already holds the products in price order, so the matches
         come straight off the bottom lane with no extra lookup or sort.
+
+        Raises:
+            TypeError: a bound is not a number.
+            ValueError: a bound is NaN or ``low`` is greater than ``high``.
         """
+        for bound in (low, high):
+            if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+                raise TypeError(
+                    f"price bounds must be numbers, got {type(bound).__name__}"
+                )
+            if math.isnan(bound):
+                raise ValueError("price bounds cannot be NaN")
+        if low > high:
+            raise ValueError(f"low ({low}) must not exceed high ({high})")
         return [
             product
             for _key, product in self._by_price.range_query(
@@ -102,7 +135,12 @@ class InventorySystem:
         Pops up to ``limit`` entries off the heap, then pushes them back, so the
         heap is left unchanged. Costs O(k log n) for ``k`` items returned, versus
         the baseline's O(n log n) scan-and-sort of the entire catalogue.
+
+        Raises:
+            ValueError: ``limit`` is negative. ``None`` means no limit.
         """
+        if limit is not None and limit < 0:
+            raise ValueError(f"limit must be >= 0, got {limit}")
         taken: list[tuple[float, str]] = []
         results: list[Product] = []
         while self._reorder and (limit is None or len(results) < limit):
@@ -118,6 +156,18 @@ class InventorySystem:
         for urgency, sku in taken:
             self._reorder.push(urgency, sku)
         return results
+
+    def _require(self, sku: str) -> Product:
+        """Return the product for ``sku`` or raise a KeyError that names it."""
+        product = self._by_sku.get(sku)
+        if product is None:
+            raise KeyError(f"unknown sku: {sku}")
+        return product
+
+    def __iter__(self) -> Iterator[Product]:
+        """Traverse every product in (price, SKU) order via the skip list."""
+        for _key, product in self._by_price:
+            yield product
 
     def __len__(self) -> int:
         return len(self._by_sku)
